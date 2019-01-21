@@ -1,0 +1,14 @@
+{
+  "name": "json",
+  "version": "0.1.0",
+  "main": "lib/index.js",
+  "devDependencies": {
+    "neon-cli": "^0.2.0",
+    "tape": "^4.9.2",
+    "tempy": "^0.2.1"
+  },
+  "scripts": {
+    "install": "neon build --release",
+    "test": "tape test/*.js"
+  }
+}

@@ -1,0 +1,6 @@
+node_modules
+native/index.node
+native/target
+shrinkwrap.yaml
+package-lock.json
+pnpm-debug.log
