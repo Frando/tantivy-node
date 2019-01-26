@@ -12,10 +12,10 @@ crate-type = ["dylib"]
 neon-build = "0.2.0"
 
 [dependencies]
-neon = "0.2.0"
-neon-serde = "0.1.1"
+log = "0.4.6"
+env_logger = "0.6.0"
 serde_derive = "1.0.80"
 serde = "1.0.80"
 tantivy = "0.8.0"
 serde_json = "1.0"
-
+napi-rs = { git = "https://github.com/Frando/napi-rs.git", rev = "d3eea0e" }
