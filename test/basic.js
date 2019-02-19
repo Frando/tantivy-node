@@ -38,23 +38,26 @@ const schema = [
 tape('basic indexing and search', t => {
   const docs = [
     { title: 'Hello, world', body: 'and it rusts down here', url: 'a:1' },
-    { title: 'Hello, moon', body: 'crates all over', url: 'a:2' },
-    { title: 'Sesame', body: 'the future is brightly broken', url: 'a:3' }
+    { title: 'Hello, moon', body: 'sea whale crates all over', url: 'a:2' },
+    { title: 'Sesame', body: 'the future is brightly rusty', url: 'a:3' }
   ]
 
   const path = tempy.directory()
 
-  tantivy.addIndex(path, schema)
-  docs.forEach(doc => tantivy.addDocument(path, doc))
+  const index = tantivy.createInDir(path, schema)
 
-  let res = tantivy.query(path, 'hello')
-  t.deepEqual(['a:1', 'a:2'], toUrl(res), 'search 1 is correct')
+  index.writer()
+  index.addDocuments(docs)
+  index.commit()
 
-  res = tantivy.query(path, 'moon')
-  t.deepEqual(['a:2'], toUrl(res), 'search 2 is correct')
+  let res = index.query('hello')
+  t.deepEqual(toUrl(res), ['a:1', 'a:2'], 'search 1 is correct')
 
-  res = tantivy.query(path, 'future')
-  t.deepEqual(['a:3'], toUrl(res), 'search 3 is correct')
+  res = index.query('moon')
+  t.deepEqual(toUrl(res), ['a:2'], 'search 2 is correct')
+
+  res = index.query('future')
+  t.deepEqual(toUrl(res), ['a:3'], 'search 3 is correct')
 
   t.end()
 

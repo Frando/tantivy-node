@@ -9,6 +9,7 @@ node bindings for [tantivy](https://github.com/tantivy-search/tantivy), using [n
 ```javascript
 const tantivy = require('tantivy-node')
 
+// Define a schema. See tantivy docs for details.
 const schema = [
   {
     name: 'title',
@@ -32,31 +33,30 @@ const schema = [
       stored: true
     }
   },
-  {
-    name: 'url',
-    type: 'text',
-    options: {
-      indexing: null,
-      stored: true
-    }
-  }
 ]
 
+// Create a search index.
+const index = tantivy.createInDir('.index', schema)
+
+// On subsequent runs reopen the search index instead.
+// const index = tantivy.openInDir(path)
+
+// Have some docs that match the schema.
 const docs = [
-  { title: 'Hello, world', body: 'and it rusts down here', url: 'a:1' },
-  { title: 'Sesame', body: 'the future is brightly broken', url: 'a:2' }
+  { title: 'Hello, world', body: 'and it rusts down here' },
+  { title: 'Sesame', body: 'the future is bright' }
 ]
 
-const path = '/tmp/tantivy-test2'
+// Open the index writer to add documents
+index.writer()
 
-const index = tantivy()
-index.createInDir(path, schema)
+// Add the documents.
+index.addDocuments(docs)
 
-// on subsequent runs:
-// index.openInDir(path)
+// Commit the changes.
+index.commit()
 
-docs.forEach(doc => index.addDocument(doc))
-
+// Search!
 const res = index.query('future')
 console.log(res)
-
+```

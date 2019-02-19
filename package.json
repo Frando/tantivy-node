@@ -9,6 +9,6 @@
   },
   "scripts": {
     "install": "neon build --release",
-    "test": "tape test/*.js"
+    "test": "neon build && tape test/*.js"
   }
 }

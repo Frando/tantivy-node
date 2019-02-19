@@ -1,11 +1,10 @@
 extern crate napi_rs;
 extern crate tantivy;
 
-use napi_rs::*;
-use napi_rs::Value;
+use napi_rs::{Result, Error, Any, Value, Object, AnyResult, ValueType, Ref, Function, CallContext, Status, Env, ModuleInitContext};
+use napi_rs::{callback, register_module};
 
-use tantivy::Index;
-use tantivy::IndexWriter;
+use tantivy::{Index, IndexWriter};
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema;
@@ -18,6 +17,14 @@ struct IndexHandle {
     pub index: Index,
     pub writer: Option<IndexWriter>
 }
+
+// Somehow, the IndexHandle never gets dropped.
+// This seems to be a bug/missing feature in napi-rs, though
+// impl Drop for IndexHandle {
+    // fn drop (&mut self) {
+        // println!("IndexHandle is dropped!")
+    // }
+// }
 
 impl IndexHandle {
     fn assert_writer(&mut self) -> Result<(&mut Index, &mut IndexWriter)> {
@@ -45,19 +52,22 @@ impl fmt::Debug for IndexHandle {
 register_module!(tantivy, init);
 
 fn init<'env>(mut ctx: ModuleInitContext) -> Result<Option<Value<'env, Object>>> {
-    ctx.export("open_in_dir", callback!(open_in_dir));
-    ctx.export("create_in_dir", callback!(create_in_dir));
+    ctx.export("index_open_in_dir", callback!(index_open_in_dir));
+    ctx.export("index_create_in_dir", callback!(index_create_in_dir));
+    ctx.export("index_create_in_ram", callback!(index_create_in_ram));
 
     ctx.export("index_query", callback!(index_query));
-    ctx.export("index_writer", callback!(index_writer));
 
+    ctx.export("index_writer_open", callback!(index_writer_open));
     ctx.export("index_writer_add_document", callback!(index_writer_add_document));
     ctx.export("index_writer_commit", callback!(index_writer_commit));
+
+    // ctx.export("foo", callback!(foo));
 
     Ok(None)
 }
 
-fn open_in_dir(ctx: CallContext) -> AnyResult {
+fn index_open_in_dir(ctx: CallContext) -> AnyResult {
     let path = ctx.args[0].to_string();
     let index_path = PathBuf::from(path);
 
@@ -65,37 +75,50 @@ fn open_in_dir(ctx: CallContext) -> AnyResult {
 
     let handle = IndexHandle { index, writer: None };
 
-    let mut wrapper = ctx.env.create_object();
-    ctx.env.wrap(&mut wrapper, handle)?;
-    wrapper.into_result()
+    wrap_into_result(&ctx, handle)
 }
 
-fn create_in_dir(ctx: CallContext) -> AnyResult {
+
+fn index_create_in_dir(ctx: CallContext) -> AnyResult {
     let path = ctx.args[0].to_string();
     let path = PathBuf::from(path);
     let schema = ctx.args[1].to_string();
-    let schema: schema::Schema = serde_json::from_str(&schema).unwrap();
+    let schema: schema::Schema = serde_json::from_str(&schema)
+        .map_err(|e| js_error(e, Status::ObjectExpected))?;
 
     let index = Index::create_in_dir(path, schema).unwrap();
     let handle = IndexHandle { index, writer: None };
-
-    let mut wrapper = ctx.env.create_object();
-    ctx.env.wrap(&mut wrapper, handle)?;
-    wrapper.into_result()
+    wrap_into_result(&ctx, handle)
 }
 
-fn index_writer(ctx: CallContext) -> AnyResult {
+fn index_create_in_ram(ctx: CallContext) -> AnyResult {
+    let schema = ctx.args[0].to_string();
+    let schema: schema::Schema = serde_json::from_str(&schema)
+        .map_err(|e| js_error(e, Status::ObjectExpected))?;
+
+    let index = Index::create_in_ram(schema);
+    let handle = IndexHandle { index, writer: None };
+    wrap_into_result(&ctx, handle)
+}
+
+fn index_writer_open(ctx: CallContext) -> AnyResult {
     let handle: &mut IndexHandle = ctx.args[0].unwrap(ctx.env);
+
+    // If a writer exists this is a noop.
+    if let Some(_) = handle.writer {
+        return undefined(ctx)
+    }
 
     let writer = {
         let index: &mut Index = &mut handle.index;
-        let writer = index.writer(50_000_000).unwrap();
+        let writer = index.writer(50_000_000)
+            .map_err(|e| js_error(e, Status::GenericFailure))?;
         writer
     };
 
     handle.writer = Some(writer);
 
-    ctx.env.get_undefined().into_result()
+    return undefined(ctx)
 }
 
 fn index_writer_add_document(ctx: CallContext) -> AnyResult {
@@ -104,7 +127,6 @@ fn index_writer_add_document(ctx: CallContext) -> AnyResult {
 
     let doc: Value<Object> = ctx.args[1].try_into().unwrap();
 
-    // let is_array: bool = doc.is_array()?;
     let len = doc.get_array_length()?;
 
     let schema = index.schema();
@@ -118,16 +140,17 @@ fn index_writer_add_document(ctx: CallContext) -> AnyResult {
         let field = schema.get_field(&fieldname).unwrap();
         document.add_text(field, &value)
     }
-    // println!("document: {:?}", document);
 
     let opstamp = writer.add_document(document);
+    writer.commit().unwrap();
     ctx.env.create_int64(opstamp as i64).into_result()
 }
 
 fn index_writer_commit(ctx: CallContext) -> AnyResult {
     let handle: &mut IndexHandle = ctx.args[0].unwrap(ctx.env);
-    let (_index, writer) = handle.assert_writer()?;
+    let (index, writer) = handle.assert_writer()?;
     let opstamp = writer.commit().unwrap();
+    index.load_searchers().unwrap();
     ctx.env.create_int64(opstamp as i64).into_result()
 }
 
@@ -141,6 +164,13 @@ fn index_query(ctx: CallContext) -> AnyResult {
 
     let index: &mut Index = &mut handle.index;
 
+    let docs = tantivy_query(index, query, limit as usize);
+
+    let array: Value<Object> = docs.to_js(&ctx)?;
+    array.into_result()
+}
+
+fn tantivy_query (index: &mut Index, query: String, limit: usize) -> Vec<NamedFieldDocument> {
     let searcher = index.searcher();
     let schema = index.schema();
 
@@ -163,13 +193,30 @@ fn index_query(ctx: CallContext) -> AnyResult {
         let named_doc = schema.to_named_doc(&retrieved_doc);
         docs.push(named_doc);
     }
-
-    let array: Value<Object> = docs.to_js(&ctx)?;
-
-    array.into_result()
+    docs
 }
 
 // Typing helpers.
+
+fn js_error<T: fmt::Display>(e: T, status: Status) -> Error {
+    eprintln!("Tantivy error: {}", e);
+    Error::new(status)
+}
+
+// fn map_err<T: fmt::Display>(e: T) -> Error {
+    // eprintln!("Tantivy error: {}", e);
+    // Error::new(Status::GenericFailure)
+// }
+
+fn wrap_into_result<'a, T: 'static>(ctx: &'a CallContext, handle: T) -> AnyResult {
+    let mut wrapper = ctx.env.create_object();
+    ctx.env.wrap(&mut wrapper, handle).unwrap();
+    wrapper.into_result()
+}
+
+fn undefined(ctx: CallContext) -> AnyResult {
+    ctx.env.get_undefined().into_result()
+}
 
 trait ConvertToJs<'a, T> {
     fn to_js (&self, ctx: &'a CallContext) -> Result<Value<'a, T>>;
@@ -186,6 +233,7 @@ impl <'a, T> ConvertToJs<'a, Object> for std::vec::Vec<T>
         Ok(arr)
     }
 }
+
 
 impl<'a> ConvertToJs<'a, Object> for NamedFieldDocument {
     fn to_js(&self, ctx: &'a CallContext) -> Result<Value<'a, Object>> {
@@ -293,3 +341,20 @@ impl<'env> ConvertToRs<'env> for Value<'env, Any> {
         env.create_reference(&f)
     }
 }
+
+// struct IndexWriterHandle {
+    // pub writer: IndexWriter,
+// }
+
+// impl <'a> ConvertToJs<'a, Object> for IndexHandle {
+    // fn to_js(&self, ctx: &'a CallContext) -> Result<Value<'a, Object>> {
+        // let res = wrap_into_result(&ctx, *self);
+        // Ok(res)
+    // }
+// }
+
+// fn wrap_object<'a, T>(ctx: &'a CallContext, object: &T) -> Result<Value<'a, Object>> {
+    // let mut wrapper = ctx.env.create_object();
+    // ctx.env.wrap(&mut wrapper, *object)?;
+    // Ok(wrapper)
+// }
