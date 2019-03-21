@@ -1,10 +1,11 @@
 extern crate napi_rs;
 extern crate tantivy;
 
-use napi_rs::{Result, Error, Any, Value, Object, AnyResult, ValueType, Ref, Function, CallContext, Status, Env, ModuleInitContext};
+// use napi_rs::{Result, Error, Any, Value, Object, AnyResult, ValueType, Ref, Function, CallContext, Status, Env, ModuleInitContext};
+use napi_rs::{Any, Value, Object, ValueType, Ref, Function, CallContext, Status, Env, ModuleInitContext};
 use napi_rs::{callback, register_module};
 
-use tantivy::{Index, IndexWriter};
+use tantivy::{Index, IndexWriter, TantivyError};
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema;
@@ -12,6 +13,46 @@ use tantivy::schema::{Value as SValue, Document, NamedFieldDocument};
 
 use std::path::PathBuf;
 use std::fmt;
+
+pub type AnyResult = Result<Option<Value<'static, Any>>>;
+pub type Result<T> = std::result::Result<T, Error>;
+
+#[derive(Debug)]
+pub struct Error {
+    status: Status,
+    msg: String
+}
+
+impl Error {
+    fn new (status: Status) -> Self {
+        Error { status: status, msg: "foo".to_string() }
+    }
+}
+
+impl From<tantivy::TantivyError> for Error {
+    fn from(e: TantivyError) -> Self {
+        eprintln!("Tantivy error: {}", e);
+        Error::new(Status::GenericFailure)
+    }
+}
+impl From<napi_rs::Error> for Error {
+    fn from(e: napi_rs::Error) -> Self {
+        eprintln!("Napi error: {:?}", e);
+        Error::new(e.get_status())
+    }
+}
+
+// impl From<TantivyNodeError> for Error {
+    // fn from(e: TantivyNodeError) -> Self {
+        // Error::new(Status::GenericFailure)
+    // }
+// }
+
+// impl From<tantivy::TantivyError> for napi_rs::Error {
+    // fn from(e: tantivy::TantivyError) -> Self {
+        // Error::new(Status::GenericFailure)
+    // }
+// }
 
 struct IndexHandle {
     pub index: Index,
@@ -33,7 +74,7 @@ impl IndexHandle {
             Some(writer) => Ok((&mut self.index, writer)),
             None => {
                 eprintln!("Tantivy: Cannot write, no index writer open.");
-                Err(napi_rs::Error::new(Status::GenericFailure))
+                Err(Error::new(Status::GenericFailure))
             }
         }
     }
@@ -111,8 +152,8 @@ fn index_writer_open(ctx: CallContext) -> AnyResult {
 
     let writer = {
         let index: &mut Index = &mut handle.index;
-        let writer = index.writer(50_000_000)
-            .map_err(|e| js_error(e, Status::GenericFailure))?;
+        let writer = index.writer(50_000_000)?;
+            // .map_err(|e| js_error(e, Status::GenericFailure))?;
         writer
     };
 
